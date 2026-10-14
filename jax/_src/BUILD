@@ -1116,6 +1116,12 @@ pytype_strict_library(
 )
 
 pytype_strict_library(
+    name = "pathways_profiler",
+    srcs = ["pathways_profiler.py"],
+    deps = ["//jax/_src/lib"],
+)
+
+pytype_strict_library(
     name = "pickle_util",
     srcs = ["pickle_util.py"],
     deps = [":profiler"] + py_deps("cloudpickle"),
@@ -1618,6 +1624,7 @@ pytype_strict_library(
         ":cloud_tpu_init",
         ":config",
         ":hardware_utils",
+        ":pathways_profiler",
         ":traceback_util",
         ":util",
         "//jax/_src/lib",
