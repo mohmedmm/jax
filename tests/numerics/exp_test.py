@@ -49,6 +49,11 @@ def _expm1_highest(x):
   return lax.expm1(x, accuracy=lax.AccuracyMode.HIGHEST)
 
 
+@jax.jit
+def _logistic_highest(x):
+  return lax.logistic(x, accuracy=lax.AccuracyMode.HIGHEST)
+
+
 # Additional range-reduction boundaries (k * ln(2)) beyond +-0.5*ln(2) and
 # +-ln(2) (which are already in _common_interesting_points), plus worst-case
 # inputs across math libraries from Gladman et al., "Accuracy of Mathematical
@@ -300,6 +305,100 @@ class LogisticTest(jtu.JaxTestCase):
         interesting_points=interesting_points,
     )
 
+  @parameterized.named_parameters(*DTYPE_PARAMS)
+  def test_logistic_highest_accuracy(self, dtype):
+    bounds = [
+        ("cpu", {bf16: 2.0, f16: 2.0, f32: 2.5, f64: 2.5}),
+        ("gpu", {bf16: 2.0, f16: 2.0, f32: 4.0, f64: 2.5}),
+        ([*TPU_EUPV1, "tpu_v6e"], {bf16: 1.0, f16: 1.0, f32: 4.0}),
+        ("tpu_v5p", {bf16: 1.0, f16: 1.0, f32: 3.5}),
+        ("tpu_7x", {bf16: 63.0, f16: 1.0, f32: 4.0}),
+    ]
+    p = jnp.finfo(dtype).nmant + 1
+    interesting_points = [
+        *(sign * k * math.log(2.0) for k in (p, p + 1) for sign in (-1, 1)),
+    ]
+    util.check_unary_precision(
+        self,
+        _logistic_highest,
+        lambda x: 1.0 / (1.0 + np.exp(-x)),
+        lambda x: 1 / (1 + mpmath.exp(-x)),
+        dtype,
+        bounds=bounds,
+        interesting_points=interesting_points,
+    )
+
+
+@jtu.thread_unsafe_test_class()
+class LogisticGradTest(jtu.JaxTestCase):
+
+  @parameterized.named_parameters(*DTYPE_PARAMS)
+  def test_logistic_grad_highest_accuracy(self, dtype):
+    bounds = [
+        ("cpu", {bf16: 3.5, f16: 4.5, f32: 6.0, f64: 6.0}),
+        ("gpu", {bf16: 3.5, f16: 4.5, f32: 8.5, f64: 4.5}),
+        (TPU_EUPV1, {bf16: 1.0, f16: 1.0, f32: 7.5}),
+        ("tpu_v5p", {bf16: 0.5, f16: 1.0, f32: 7.5}),
+        ("tpu_v6e", {bf16: 0.5, f16: 1.0, f32: 8.0}),
+        ("tpu_7x", {bf16: 63.0, f16: 1.0, f32: 8.0}),
+    ]
+    p = jnp.finfo(dtype).nmant + 1
+    interesting_points = [
+        *(sign * k * math.log(2.0) for k in (p, p + 1) for sign in (-1, 1)),
+    ]
+    util.check_unary_precision(
+        self,
+        jax.jit(jax.vmap(jax.grad(_logistic_highest))),
+        lambda x: (1.0 / (1.0 + np.exp(-x))) * (1.0 / (1.0 + np.exp(x))),
+        lambda x: 1 / (4 * mpmath.cosh(x / 2) ** 2),
+        dtype,
+        bounds=bounds,
+        interesting_points=interesting_points,
+    )
+
+  @parameterized.named_parameters(("_float32", f32), ("_float64", f64))
+  def test_logistic_higher_order_highest_accuracy(self, dtype):
+    if dtype == f64 and jtu.device_under_test() == "tpu":
+      self.skipTest("float64 on TPU is ef57 double-double")
+    d2_fn = jax.jit(jax.vmap(jax.grad(jax.grad(_logistic_highest))))
+    d3_fn = jax.jit(jax.vmap(jax.grad(jax.grad(jax.grad(_logistic_highest)))))
+
+    # Include tiny non-zero x (where 1 - 2 * logistic(x) previously cancelled
+    # 0.5 - 0.5 to 0.0) and large |x| where logistic(x) saturates to 0 or 1.
+    x_tiny = 1e-8 if dtype == f32 else 1e-17
+    x_tail = 20.0 if dtype == f32 else 50.0
+    xs = jnp.array(
+        [-x_tail, -2.0, -x_tiny, 0.0, x_tiny, 2.0, x_tail], dtype=dtype
+    )
+    d2 = np.asarray(d2_fn(xs))
+    d3 = np.asarray(d3_fn(xs))
+
+    def mp_d2(v):
+      with mpmath.extraprec(80):
+        t = mpmath.tanh(v / 2)
+        s = 1 / (4 * mpmath.cosh(v / 2) ** 2)
+        return -t * s
+
+    def mp_d3(v):
+      with mpmath.extraprec(80):
+        t = mpmath.tanh(v / 2)
+        s = 1 / (4 * mpmath.cosh(v / 2) ** 2)
+        return s * (t * t - 2 * s)
+
+    ref_d2 = np.array(
+        [util.eval_mpmath(mp_d2, v.item(), dtype=dtype) for v in np.asarray(xs)],
+        dtype=object if dtype == f64 else np.float64,
+    )
+    ref_d3 = np.array(
+        [util.eval_mpmath(mp_d3, v.item(), dtype=dtype) for v in np.asarray(xs)],
+        dtype=object if dtype == f64 else np.float64,
+    )
+    self.assertLessEqual(np.max(util.ulp_diff(d2, ref_d2, dtype)), 8.0)
+    self.assertLessEqual(np.max(util.ulp_diff(d3, ref_d3, dtype)), 16.0)
+    infs = jnp.array([-jnp.inf, jnp.inf], dtype=dtype)
+    self.assertArraysEqual(d2_fn(infs), jnp.zeros_like(infs))
+    self.assertArraysEqual(d3_fn(infs), jnp.zeros_like(infs))
+
 
 util.register_benchmark(jnp.exp)
 util.register_benchmark(_exp_highest)
@@ -308,6 +407,7 @@ util.register_benchmark(_exp2_highest)
 util.register_benchmark(jnp.expm1)
 util.register_benchmark(_expm1_highest)
 util.register_benchmark(lax.logistic)
+util.register_benchmark(_logistic_highest)
 
 
 if __name__ == "__main__":
