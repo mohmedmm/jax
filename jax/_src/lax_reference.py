@@ -71,6 +71,36 @@ asinh = np.arcsinh
 acosh = np.arccosh
 atanh = np.arctanh
 
+
+def sinpi(x):
+  x = np.asarray(x)
+  with np.errstate(all='ignore'):
+    t = np.fmod(x.astype(np.float64), 2.0)
+    res = np.where(np.abs(t) == 1.0, np.copysign(0.0, t), np.sin(np.pi * t))
+    return res.astype(x.dtype)
+
+
+def cospi(x):
+  x = np.asarray(x)
+  with np.errstate(all='ignore'):
+    t = np.abs(np.fmod(x.astype(np.float64), 2.0))
+    res = np.where((t == 0.5) | (t == 1.5), 0.0, np.cos(np.pi * t))
+    return res.astype(x.dtype)
+
+
+def tanpi(x):
+  x = np.asarray(x)
+  with np.errstate(all='ignore'):
+    t = np.fmod(x.astype(np.float64), 2.0)
+    at = np.abs(t)
+    res = np.tan(np.pi * t)
+    res = np.where(at == 1.0, np.copysign(0.0, -t), res)
+    res = np.where(at == 0.5, np.copysign(np.inf, t), res)
+    res = np.where(at == 1.5, np.copysign(np.inf, -t), res)
+    res = np.where((at == 0.25) | (at == 1.25), np.copysign(1.0, t), res)
+    res = np.where((at == 0.75) | (at == 1.75), np.copysign(1.0, -t), res)
+    return res.astype(x.dtype)
+
 def logistic(x): return (1 / (1 + np.exp(-x))).astype(x.dtype)
 def betainc(a, b, x): return scipy.special.betainc(a, b, x).astype(x.dtype)
 def lgamma(x): return scipy.special.gammaln(x).astype(x.dtype)
