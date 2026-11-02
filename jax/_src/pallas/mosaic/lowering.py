@@ -421,6 +421,7 @@ class PallasLoweringCacheKey:
   block_shapes: tuple[tuple[int | pallas_core.Squeezed, ...] | None, ...]
   grid_arity: int
   forward_compatible: bool = False
+  needs_layout_passes: bool = False
   fuse_transposed_lhs_in_matmul: bool = False
   grid_sizes: tuple[int, ...] = ()
   vmapped_dims: tuple[int, ...] = ()
@@ -1828,15 +1829,22 @@ def jaxpr_subcomp(
         cache_key = None
         rule_context = None
 
-        def is_acc_aval(aval):
+        def is_uncacheable_out_aval(aval):
           return (
-              isinstance(aval, state.AbstractRef) and
-              isinstance(aval.memory_space, tpu_core.AccMemorySpace)
+              isinstance(aval, state.AbstractRef)
+              and isinstance(aval.memory_space, tpu_core.AccMemorySpace)
+          ) or (
+              isinstance(aval, jax_core.ShapedArray)
+              and isinstance(aval.dtype, prng.KeyTy)
+              and pl_random.is_pallas_impl(aval.dtype._impl)
           )
         # TODO(phawkins): allow KeyScalarBundle/AccRef here as well as ir.Value.
-        can_cache = (eqn.primitive not in _uncacheable_primitives and
-                     all(isinstance(x, ir.Value) for x in invals) and
-                     not any(is_acc_aval(o) for o in avals_out))
+        can_cache = (
+            eqn.primitive not in _uncacheable_primitives
+            and next(jax_core.jaxprs_in_params(eqn.params), None) is None
+            and all(isinstance(x, ir.Value) for x in invals)
+            and not any(is_uncacheable_out_aval(o) for o in avals_out)
+        )
         if can_cache:
           grid_arity = (
               len(ctx.user_grid_indices)
@@ -1852,6 +1860,7 @@ def jaxpr_subcomp(
               block_shapes=block_shapes,
               grid_arity=grid_arity,
               forward_compatible=ctx.forward_compatible,
+              needs_layout_passes=ctx.needs_layout_passes,
               fuse_transposed_lhs_in_matmul=ctx.fuse_transposed_lhs_in_matmul,
               grid_sizes=ctx.grid_sizes,
               vmapped_dims=ctx.vmapped_dims,
